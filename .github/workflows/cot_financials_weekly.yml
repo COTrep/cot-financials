@@ -1,0 +1,39 @@
+name: COT Financials — weekly update
+
+on:
+  schedule:
+    - cron: "0 17 * * 5"   # Fridays 17:00 UTC (CFTC releases ~16:30 UTC)
+  workflow_dispatch:        # manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas xlrd supabase numpy
+
+      - name: Download current-year TFF data
+        run: |
+          YEAR=$(date +%Y)
+          URL="https://www.cftc.gov/files/dea/history/fut_fin_xls_${YEAR}.zip"
+          echo "Downloading $URL"
+          curl -fsSL \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -e "https://www.cftc.gov/MarketReports/CommitmentsofTraders/HistoricalCompressed/index.htm" \
+            "$URL" -o tff_current.zip
+          mkdir -p xls_current
+          unzip -o tff_current.zip -d xls_current
+
+      - name: Upsert into Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python load_to_supabase.py xls_current
