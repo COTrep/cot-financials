@@ -26,8 +26,15 @@ jobs:
           URL="https://www.cftc.gov/files/dea/history/fut_fin_xls_${YEAR}.zip"
           echo "Downloading $URL"
           curl -fsSL \
-            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
+            -H "Accept-Language: en-US,en;q=0.9" \
+            -H "Accept-Encoding: gzip, deflate, br" \
+            -H "Sec-Fetch-Dest: document" \
+            -H "Sec-Fetch-Mode: navigate" \
+            -H "Sec-Fetch-Site: same-origin" \
             -e "https://www.cftc.gov/MarketReports/CommitmentsofTraders/HistoricalCompressed/index.htm" \
+            --retry 3 --retry-delay 5 \
             "$URL" -o tff_current.zip
           mkdir -p xls_current
           unzip -o tff_current.zip -d xls_current
