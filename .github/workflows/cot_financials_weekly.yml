@@ -5,6 +5,10 @@ on:
     - cron: "0 17 * * 5"   # Fridays 17:00 UTC (CFTC releases ~16:30 UTC)
   workflow_dispatch:        # manual trigger
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -18,7 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pandas xlrd supabase numpy
+        run: pip install pandas xlrd supabase numpy requests
 
       - name: Download current-year TFF data
         run: |
@@ -44,3 +48,94 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python load_to_supabase.py xls_current
+
+      - name: Report failure as GitHub Issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LABEL="pipeline-failure"
+          gh label create "$LABEL" --color D73A4A --description "El job de ingesta semanal falló" 2>/dev/null || true
+
+          TITLE="Pipeline failure: cot-financials weekly update"
+          BODY="El job falló el $(date -u +%Y-%m-%dT%H:%M:%SZ).
+
+          Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          NUMBER=$(gh issue list --label "$LABEL" --state open --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -n1)
+
+          if [ -n "$NUMBER" ]; then
+            gh issue comment "$NUMBER" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY" --label "$LABEL" --assignee COTrep
+          fi
+
+  freshness-check:
+    needs: update
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Detect frozen instruments
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TABLE_NAME: cot_financials_raw
+        run: |
+          python check_freshness.py > flagged.json
+          echo "=== Instrumentos congelados detectados ==="
+          cat flagged.json
+
+      - name: Reconcile GitHub Issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TABLE_NAME: cot_financials_raw
+        run: |
+          set -e
+          LABEL="instrumento-congelado"
+          gh label create "$LABEL" --color FBCA04 --description "Instrumento sin actualizaciones recientes en su tabla COT" 2>/dev/null || true
+
+          gh issue list --label "$LABEL" --state open --json number,title --jq '.[] | "\(.number)\t\(.title)"' > open_issues.tsv || true
+          touch open_issues.tsv
+
+          jq -r '.[].market' flagged.json | sed 's/^/Instrumento congelado: /' | sort > flagged_titles.txt
+          touch flagged_titles.txt
+
+          # Cerrar issues de instrumentos que ya no están congelados (se recuperaron)
+          while IFS=$'\t' read -r number title; do
+            [ -z "$number" ] && continue
+            if ! grep -qxF "$title" flagged_titles.txt; then
+              gh issue comment "$number" --body "Recuperado: este instrumento volvió a reportar datos recientes. Cerrando automáticamente."
+              gh issue close "$number"
+            fi
+          done < open_issues.tsv
+
+          # Crear o actualizar issues de instrumentos actualmente congelados
+          jq -c '.[]' flagged.json | while read -r item; do
+            market=$(jq -r '.market' <<< "$item")
+            weeks=$(jq -r '.weeks_since_last' <<< "$item")
+            threshold=$(jq -r '.threshold_weeks' <<< "$item")
+            maxfecha=$(jq -r '.max_fecha' <<< "$item")
+            tier=$(jq -r '.tier' <<< "$item")
+            title="Instrumento congelado: $market"
+            body="Sin datos nuevos desde **${maxfecha}** (${weeks} semanas sin actualizar, umbral ${tier}: ${threshold} semanas). Tabla: \`${TABLE_NAME}\`."
+
+            number=$(grep -F "$title" open_issues.tsv | cut -f1 || true)
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --body "$body"
+            else
+              gh issue create --title "$title" --body "$body" --label "$LABEL" --assignee COTrep
+            fi
+          done
