@@ -83,6 +83,56 @@ print(f"\nTotal rows loaded: {len(df)}")
 df = df.drop_duplicates(subset=["market_and_exchange_names", "report_date_as_mm_dd_yyyy"])
 print(f"After dedup: {len(df)}")
 
+# ─── Whitelist — solo commodities históricos conocidos ────────────────────────
+# El CFTC amplió fut_disagg_xls a partir de 2026 con ~288 instrumentos nuevos
+# (electricidad, gas basis, créditos de carbono, etc.). Solo cargamos los core.
+
+ALLOWED_MARKETS = {
+    # Granos
+    "CORN - CHICAGO BOARD OF TRADE",
+    "SOYBEANS - CHICAGO BOARD OF TRADE",
+    "SOYBEAN MEAL - CHICAGO BOARD OF TRADE",
+    "SOYBEAN OIL - CHICAGO BOARD OF TRADE",
+    "OATS - CHICAGO BOARD OF TRADE",
+    "WHEAT-HRW - CHICAGO BOARD OF TRADE",
+    "WHEAT-SRW - CHICAGO BOARD OF TRADE",
+    # Metales
+    "GOLD - COMMODITY EXCHANGE INC.",
+    "SILVER - COMMODITY EXCHANGE INC.",
+    "PALLADIUM - NEW YORK MERCANTILE EXCHANGE",
+    "PLATINUM - NEW YORK MERCANTILE EXCHANGE",
+    "COPPER- #1 - COMMODITY EXCHANGE INC.",
+    "ALUMINUM MWP - COMMODITY EXCHANGE INC.",
+    "STEEL-HRC - COMMODITY EXCHANGE INC.",
+    "MICRO GOLD - COMMODITY EXCHANGE INC.",
+    # Ganadería
+    "LIVE CATTLE - CHICAGO MERCANTILE EXCHANGE",
+    "FEEDER CATTLE - CHICAGO MERCANTILE EXCHANGE",
+    "LEAN HOGS - CHICAGO MERCANTILE EXCHANGE",
+    # Softs
+    "COCOA - ICE FUTURES U.S.",
+    "COFFEE C - ICE FUTURES U.S.",
+    "COTTON NO. 2 - ICE FUTURES U.S.",
+    "SUGAR NO. 11 - ICE FUTURES U.S.",
+    "FRZN CONCENTRATED ORANGE JUICE - ICE FUTURES U.S.",
+    # Energía
+    "CRUDE OIL, LIGHT SWEET-WTI - ICE FUTURES EUROPE",
+    "BRENT LAST DAY - NEW YORK MERCANTILE EXCHANGE",
+    "WTI-PHYSICAL - NEW YORK MERCANTILE EXCHANGE",
+    "GASOLINE RBOB - NEW YORK MERCANTILE EXCHANGE",
+    "NY HARBOR ULSD - NEW YORK MERCANTILE EXCHANGE",
+    "NAT GAS NYME - NEW YORK MERCANTILE EXCHANGE",
+    "HENRY HUB - NEW YORK MERCANTILE EXCHANGE",
+    "HENRY HUB BASIS - ICE FUTURES ENERGY DIV",
+    "HENRY HUB INDEX - ICE FUTURES ENERGY DIV",
+    # Madera
+    "LUMBER - CHICAGO MERCANTILE EXCHANGE",
+}
+
+before = len(df)
+df = df[df["market_and_exchange_names"].isin(ALLOWED_MARKETS)]
+print(f"After whitelist: {len(df)} (dropped {before - len(df)} rows from non-core instruments)")
+
 # Keep only columns that exist in the DB
 present = [c for c in DB_COLS if c in df.columns]
 missing = [c for c in DB_COLS if c not in df.columns]

@@ -99,6 +99,64 @@ print(f"\nTOTAL ROWS: {len(df)}")
 df = df.drop_duplicates(subset=["market_and_exchange_names", "report_date_as_mm_dd_yyyy"])
 print(f"AFTER DEDUP: {len(df)}")
 
+# ─── Whitelist — solo instrumentos históricos conocidos ───────────────────────
+# El CFTC amplió fut_fin_xls a partir de 2022 con cientos de instrumentos nuevos.
+# Solo cargamos los que siempre han estado en la tabla.
+
+ALLOWED_MARKETS = {
+    # Divisas — activos continuos
+    "AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "CANADIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "EURO FX - CHICAGO MERCANTILE EXCHANGE",
+    "JAPANESE YEN - CHICAGO MERCANTILE EXCHANGE",
+    "MEXICAN PESO - CHICAGO MERCANTILE EXCHANGE",
+    "SWISS FRANC - CHICAGO MERCANTILE EXCHANGE",
+    # Divisas — nombres viejos (congelados 2022-02-01, historia válida)
+    "BRITISH POUND STERLING - CHICAGO MERCANTILE EXCHANGE",
+    "NEW ZEALAND DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "U.S. DOLLAR INDEX - ICE FUTURES U.S.",
+    # Divisas — nombres nuevos (sucesores activos desde 2022-02-08)
+    "BRITISH POUND - CHICAGO MERCANTILE EXCHANGE",
+    "NZ DOLLAR - CHICAGO MERCANTILE EXCHANGE",
+    "USD INDEX - ICE FUTURES U.S.",
+    # Treasuries — nombres viejos (congelados 2022-02-01)
+    "10-YEAR U.S. TREASURY NOTES - CHICAGO BOARD OF TRADE",
+    "2-YEAR U.S. TREASURY NOTES - CHICAGO BOARD OF TRADE",
+    "5-YEAR U.S. TREASURY NOTES - CHICAGO BOARD OF TRADE",
+    "30-DAY FEDERAL FUNDS - CHICAGO BOARD OF TRADE",
+    "U.S. TREASURY BONDS - CHICAGO BOARD OF TRADE",
+    # Treasuries — nombres nuevos (sucesores activos desde 2022-02-08)
+    "UST 10Y NOTE - CHICAGO BOARD OF TRADE",
+    "UST 2Y NOTE - CHICAGO BOARD OF TRADE",
+    "UST 5Y NOTE - CHICAGO BOARD OF TRADE",
+    "FED FUNDS - CHICAGO BOARD OF TRADE",
+    "UST BOND - CHICAGO BOARD OF TRADE",
+    "ULTRA UST 10Y - CHICAGO BOARD OF TRADE",
+    "ULTRA UST BOND - CHICAGO BOARD OF TRADE",
+    # Índices — activos continuos
+    "E-MINI S&P 400 STOCK INDEX - CHICAGO MERCANTILE EXCHANGE",
+    "NIKKEI STOCK AVERAGE YEN DENOM - CHICAGO MERCANTILE EXCHANGE",
+    "VIX FUTURES - CBOE FUTURES EXCHANGE",
+    # Índices — nombres viejos (congelados)
+    "E-MINI S&P 500 STOCK INDEX - CHICAGO MERCANTILE EXCHANGE",
+    "NASDAQ-100 STOCK INDEX (MINI) - CHICAGO MERCANTILE EXCHANGE",
+    "NIKKEI STOCK AVERAGE - CHICAGO MERCANTILE EXCHANGE",
+    # Índices — nombres nuevos (sucesores activos desde 2022-02-08)
+    "E-MINI S&P 500 - CHICAGO MERCANTILE EXCHANGE",
+    "NASDAQ MINI - CHICAGO MERCANTILE EXCHANGE",
+    # Índices descontinuados (historia válida)
+    "DOW JONES INDUSTRIAL AVERAGE - CHICAGO BOARD OF TRADE",
+    "NASDAQ-100 STOCK INDEX - CHICAGO MERCANTILE EXCHANGE",
+    "Russell 2000 Stock Index (Mini) - Chicago Mercantile Exchange",
+    "Russell 2000 Stock Index Future - Chicago Mercantile Exchange",
+    "S&P 400 MIDCAP STOCK INDEX - CHICAGO MERCANTILE EXCHANGE",
+    "S&P 500 STOCK INDEX - CHICAGO MERCANTILE EXCHANGE",
+}
+
+before = len(df)
+df = df[df["market_and_exchange_names"].isin(ALLOWED_MARKETS)]
+print(f"AFTER WHITELIST: {len(df)} (dropped {before - len(df)} rows from non-core instruments)")
+
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 df.replace([".", "..", "...", ""], np.nan, inplace=True)
