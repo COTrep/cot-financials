@@ -2,7 +2,7 @@ name: COT Financials — weekly update
 
 on:
   schedule:
-    - cron: "0 17 * * 5"   # Fridays 17:00 UTC (CFTC releases ~16:30 UTC)
+    - cron: "0 21 * * 5"   # Fridays 21:00 UTC (CFTC releases ~19:00-20:30 UTC)
   workflow_dispatch:        # manual trigger
 
 permissions:
