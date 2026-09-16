@@ -1,9 +1,9 @@
 """
-CFTC Disaggregated COT — Supabase loader.
-Reads all XLS files found under XLS_DIR and upserts into cot_weekly_raw.
+CFTC Disaggregated COT — historical backfill.
+Downloads all annual zips (2006-2016 bulk + 2017→current) and upserts into cot_weekly_raw.
 
 Usage:
-  python load_commodities.py <xls_dir>
+  python load_disagg_historical.py
 
 Required env vars:
   SUPABASE_URL
@@ -13,24 +13,34 @@ Required env vars:
 import os
 import sys
 import glob
+import shutil
+import tempfile
+import zipfile
+import urllib.request
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 from supabase import create_client
 
-XLS_DIR    = sys.argv[1] if len(sys.argv) > 1 else "."
 TABLE_NAME = "cot_weekly_raw"
 CHUNK_SIZE = 500
+CURRENT_YEAR = datetime.now().year
 
-supabase = create_client(
-    os.environ["SUPABASE_URL"],
-    os.environ["SUPABASE_SERVICE_ROLE_KEY"],
-)
+DOWNLOAD_DIR = os.path.join(tempfile.gettempdir(), "cftc_disagg_historical")
+
+URLS = [
+    # Bulk 2006-2016
+    ("2006-2016", "https://www.cftc.gov/files/dea/history/fut_disagg_xls_2006_2016.zip"),
+] + [
+    (str(y), f"https://www.cftc.gov/files/dea/history/fut_disagg_xls_{y}.zip")
+    for y in range(2017, CURRENT_YEAR + 1)
+]
 
 RENAME_MAP = {
     "as_of_date_in_form_yymmdd": "as_of_date_in_form_yyyymmdd",
 }
 
-# Text/date columns — left as-is
 SKIP_COLS = {
     "market_and_exchange_names",
     "report_date_as_mm_dd_yyyy",
@@ -38,7 +48,6 @@ SKIP_COLS = {
     "cftc_contract_market_code",
 }
 
-# Columns that exist in cot_weekly_raw (28 total)
 DB_COLS = [
     "market_and_exchange_names",
     "as_of_date_in_form_yyyymmdd",
@@ -54,39 +63,6 @@ DB_COLS = [
     "traders_tot_all", "traders_tot_old", "traders_tot_other",
 ]
 
-files = sorted(
-    glob.glob(os.path.join(XLS_DIR, "**", "*.xls"), recursive=True) +
-    glob.glob(os.path.join(XLS_DIR, "**", "*.xlsx"), recursive=True)
-)
-if not files:
-    print(f"No XLS files found in {XLS_DIR}")
-    sys.exit(1)
-
-frames = []
-for f in files:
-    try:
-        df = pd.read_excel(f, dtype=str, engine="xlrd")
-        df.columns = df.columns.str.strip().str.lower()
-        df = df.rename(columns=RENAME_MAP)
-        frames.append(df)
-        print(f"  Read {f}: {len(df)} rows")
-    except Exception as e:
-        print(f"  SKIP {f}: {e}")
-
-if not frames:
-    print("No data loaded.")
-    sys.exit(1)
-
-df = pd.concat(frames, ignore_index=True)
-print(f"\nTotal rows loaded: {len(df)}")
-
-df = df.drop_duplicates(subset=["market_and_exchange_names", "report_date_as_mm_dd_yyyy"])
-print(f"After dedup: {len(df)}")
-
-# ─── Whitelist — solo commodities históricos conocidos ────────────────────────
-# El CFTC amplió fut_disagg_xls a partir de 2026 con ~288 instrumentos nuevos
-# (electricidad, gas basis, créditos de carbono, etc.). Solo cargamos los core.
-
 ALLOWED_MARKETS = {
     # Granos
     "CORN - CHICAGO BOARD OF TRADE",
@@ -94,7 +70,7 @@ ALLOWED_MARKETS = {
     "SOYBEAN MEAL - CHICAGO BOARD OF TRADE",
     "SOYBEAN OIL - CHICAGO BOARD OF TRADE",
     "OATS - CHICAGO BOARD OF TRADE",
-    # Wheat: nombre unificado pre-diciembre 2013 (CFTC lo dividió en HRW/SRW en dic 2013)
+    # Wheat: nombre unificado pre-dic 2013, luego dividido en HRW/SRW
     "WHEAT - CHICAGO BOARD OF TRADE",
     "WHEAT-HRW - CHICAGO BOARD OF TRADE",
     "WHEAT-SRW - CHICAGO BOARD OF TRADE",
@@ -131,15 +107,76 @@ ALLOWED_MARKETS = {
     "LUMBER - CHICAGO MERCANTILE EXCHANGE",
 }
 
+supabase = create_client(
+    os.environ["SUPABASE_URL"],
+    os.environ["SUPABASE_SERVICE_ROLE_KEY"],
+)
+
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/HistoricalCompressed/index.htm",
+}
+
+def download(label, url):
+    zip_path = os.path.join(DOWNLOAD_DIR, f"disagg_{label}.zip")
+    extract_dir = os.path.join(DOWNLOAD_DIR, f"disagg_{label}")
+    if os.path.exists(extract_dir):
+        print(f"  [{label}] already extracted, skipping download")
+        return extract_dir
+    print(f"  [{label}] downloading {url}")
+    req = urllib.request.Request(url, headers=HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp, open(zip_path, "wb") as f:
+            shutil.copyfileobj(resp, f)
+    except Exception as e:
+        print(f"  [{label}] SKIP (download failed): {e}")
+        return None
+    os.makedirs(extract_dir, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(extract_dir)
+    os.remove(zip_path)
+    return extract_dir
+
+all_frames = []
+for label, url in URLS:
+    extract_dir = download(label, url)
+    if not extract_dir:
+        continue
+    files = sorted(
+        glob.glob(os.path.join(extract_dir, "**", "*.xls"), recursive=True) +
+        glob.glob(os.path.join(extract_dir, "**", "*.xlsx"), recursive=True)
+    )
+    for f in files:
+        try:
+            df = pd.read_excel(f, dtype=str, engine="xlrd")
+            df.columns = df.columns.str.strip().str.lower()
+            df = df.rename(columns=RENAME_MAP)
+            all_frames.append(df)
+            print(f"    Read {os.path.basename(f)}: {len(df)} rows")
+        except Exception as e:
+            print(f"    SKIP {f}: {e}")
+
+if not all_frames:
+    print("No data loaded.")
+    sys.exit(1)
+
+df = pd.concat(all_frames, ignore_index=True)
+print(f"\nTotal rows loaded: {len(df)}")
+
+df = df.drop_duplicates(subset=["market_and_exchange_names", "report_date_as_mm_dd_yyyy"])
+print(f"After dedup: {len(df)}")
+
 before = len(df)
 df = df[df["market_and_exchange_names"].isin(ALLOWED_MARKETS)]
-print(f"After whitelist: {len(df)} (dropped {before - len(df)} rows from non-core instruments)")
+print(f"After whitelist: {len(df)} (dropped {before - len(df)} rows)")
 
-# Keep only columns that exist in the DB
 present = [c for c in DB_COLS if c in df.columns]
 missing = [c for c in DB_COLS if c not in df.columns]
 if missing:
-    print(f"WARNING: columns not in source file (will be NULL): {missing}")
+    print(f"WARNING: columns not in source (will be NULL): {missing}")
 df = df[present]
 
 df.replace([".", "..", "", " "], np.nan, inplace=True)

@@ -65,6 +65,7 @@ python exec_gap.py   # reads %TEMP%\cftc_tff_gap\gap_records.json
 - `load_to_supabase.py` — weekly financials loader (TFF → `cot_financials_raw`). Used by `cot_financials_weekly.yml`.
 - `load_commodities.py` — weekly commodities loader (disaggregated → `cot_weekly_raw`). Used by `cot_commodities_weekly.yml`. Selects only the 28 columns that exist in `cot_weekly_raw` (no `FLOAT_COLS` — all numeric cols are bigint).
 - `load_historical.py` — full historical backfill for financials (2006→current). Run once manually.
+- `load_disagg_historical.py` — full historical backfill for commodities (2006→current, disaggregated). Needed to load pre-2013 `WHEAT - CHICAGO BOARD OF TRADE` data. Downloads to `%TEMP%/cftc_disagg_historical/`.
 - `exec_gap.py` — one-time gap filler that upserts `gap_records.json` via Supabase REST API (uses `urllib.request`, no supabase-py). Already executed; kept for reference.
 - `check_freshness.py` — detects instruments with no recent updates; outputs JSON; used by both freshness-check jobs.
 
@@ -82,7 +83,10 @@ Keep `RENAME_MAP` and `SKIP_COLS` in sync between `load_to_supabase.py` and `loa
 Old names (frozen at 2022-02-01) and new names (starting 2022-02-08) both exist in the table. The 4-year gap 2022-02-08 → 2026-01-06 was backfilled via `exec_gap.py` (12,377 records, completed). Affected instruments: UST 10Y, UST 2Y, UST 5Y, T-Bonds, Fed Funds, GBP, NZD, USD Index, E-mini S&P 500, Nasdaq Mini.
 
 **Commodities (`cot_weekly_raw`) — complete, no gaps:**
-Main commodities (Gold, Silver, Crude Oil, Corn, Soybeans, Wheat-HRW, Wheat-SRW, Natural Gas, Copper, Coffee, Sugar, Cotton, Cocoa) have full coverage from 2006. WHEAT-HRW/SRW split in Dec 2013 is a structural CFTC change — no backfill possible or needed.
+Main commodities have full coverage from 2006. WHEAT history:
+- Pre-dec 2013: `WHEAT - CHICAGO BOARD OF TRADE` (single contract, whitelisted)
+- Post-dec 2013: `WHEAT-HRW - CHICAGO BOARD OF TRADE` + `WHEAT-SRW - CHICAGO BOARD OF TRADE`
+All three names are whitelisted; backfill via `load_disagg_historical.py` populates pre-2013 wheat data.
 
 ### GitHub Actions workflows
 
