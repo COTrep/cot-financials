@@ -4,58 +4,101 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-A small data pipeline that downloads CFTC "Traders in Financial Futures" (TFF) Commitment of Traders reports and upserts them into a Supabase Postgres table (`cot_financials_raw`). There is no app code, build step, or test suite — just two Python scripts and a scheduled GitHub Actions workflow.
+A data pipeline that downloads CFTC Commitment of Traders reports and upserts them into two separate Supabase tables:
+
+| Report type | CFTC URL pattern | Script | Supabase table |
+|---|---|---|---|
+| TFF (Traders in Financial Futures) | `fut_fin_xls_{YEAR}.zip` | `load_to_supabase.py` | `cot_financials_raw` |
+| Disaggregated COT (commodities) | `fut_disagg_xls_{YEAR}.zip` | `load_commodities.py` | `cot_weekly_raw` |
+
+There is no app code, build step, or test suite — just Python scripts and two scheduled GitHub Actions workflows.
 
 ## Commands
 
 Install dependencies (no requirements.txt — install directly):
 ```
-pip install pandas xlrd supabase numpy
+pip install pandas xlrd supabase numpy requests
 ```
 
 Both scripts require these environment variables:
 ```
 SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_SERVICE_ROLE_KEY   ← service-role JWT, required; anon key is blocked by RLS
 ```
 
-**Weekly/incremental load** — reads all `.xls`/`.xlsx` files found recursively under a directory and upserts them:
+**Weekly financials load** — TFF data → `cot_financials_raw`:
 ```
 python load_to_supabase.py <xls_dir>
 ```
 
-**Full historical backfill** — downloads every CFTC TFF zip from 2006 to the current year, extracts, and upserts everything:
+**Weekly commodities load** — disaggregated COT data → `cot_weekly_raw`:
+```
+python load_commodities.py <xls_dir>
+```
+
+**Full historical backfill (financials)** — downloads every CFTC TFF zip 2006→current:
 ```
 python load_historical.py
 ```
-Note: `load_historical.py` has a hardcoded `DOWNLOAD_DIR` (`C:/Users/Jesús/AppData/Local/Temp/cftc_tff/historical`) — update this path for the local machine before running.
+Note: `load_historical.py` has a hardcoded `DOWNLOAD_DIR` — update before running locally.
+
+**Gap backfill (one-time, already executed)** — upserted 12,377 records from gap_records.json:
+```
+python exec_gap.py   # reads %TEMP%\cftc_tff_gap\gap_records.json
+```
 
 ## Architecture
 
-### Data flow
-1. CFTC publishes zipped Excel files of TFF reports at `https://www.cftc.gov/files/dea/history/...` (bulk 2006-2016 zip, then one annual zip per year from 2017+).
-2. The scripts download/extract these zips, read every `.xls`/`.xlsx` with `pandas.read_excel(..., dtype=str, engine="xlrd")`, lowercase/strip column headers, and concatenate all frames.
+### Data flow (both pipelines follow the same pattern)
+1. CFTC publishes zipped Excel files at `https://www.cftc.gov/files/dea/history/...`.
+2. Scripts download/extract zips, read every `.xls`/`.xlsx` with `pandas.read_excel(..., dtype=str, engine="xlrd")`, lowercase/strip column headers.
 3. Rows are de-duplicated on `(market_and_exchange_names, report_date_as_mm_dd_yyyy)`.
-4. Column type coercion is driven by two sets defined at the top of each script:
-   - `SKIP_COLS` — identifier/text/date columns left untouched (handled separately).
-   - `FLOAT_COLS` — percentage/concentration columns coerced to numeric float (Postgres `numeric`).
-   - Everything else is coerced to `Int64` (nullable integer) for Postgres `bigint` columns.
-5. `report_date_as_mm_dd_yyyy` and `as_of_date_in_form_yyyymmdd` (renamed from CFTC's `as_of_date_in_form_yymmdd`) are parsed into `YYYY-MM-DD` date strings.
-6. Records are cleaned (NaN → `None`, numpy scalars → plain `int`) and upserted to Supabase in chunks of 500 via `on_conflict="market_and_exchange_names,report_date_as_mm_dd_yyyy"`.
+4. Column type coercion:
+   - `SKIP_COLS` — identifier/text/date columns left untouched.
+   - `FLOAT_COLS` — percentage/concentration columns coerced to float (financials only).
+   - Everything else → `Int64` (nullable integer) → Postgres `bigint`.
+5. `report_date_as_mm_dd_yyyy` and `as_of_date_in_form_yyyymmdd` (renamed from CFTC's `as_of_date_in_form_yymmdd`) parsed into `YYYY-MM-DD`.
+6. Upserted to Supabase in chunks of 500 via `on_conflict="market_and_exchange_names,report_date_as_mm_dd_yyyy"`.
 
-### Two entry points, same target table
-- `load_to_supabase.py` — generic loader over a directory of XLS files; this is what the GitHub Actions workflow runs against the freshly-downloaded current-year zip.
-- `load_historical.py` — standalone backfill script; duplicates the same column-handling logic but additionally drives its own download/extract loop across all years (2006 bulk + annual 2017→current).
+### Script inventory
 
-Keep `RENAME_MAP`, `SKIP_COLS`, and `FLOAT_COLS` in sync between the two scripts if either changes — they are independent copies, not shared imports.
+- `load_to_supabase.py` — weekly financials loader (TFF → `cot_financials_raw`). Used by `cot_financials_weekly.yml`.
+- `load_commodities.py` — weekly commodities loader (disaggregated → `cot_weekly_raw`). Used by `cot_commodities_weekly.yml`. Selects only the 28 columns that exist in `cot_weekly_raw` (no `FLOAT_COLS` — all numeric cols are bigint).
+- `load_historical.py` — full historical backfill for financials (2006→current). Run once manually.
+- `exec_gap.py` — one-time gap filler that upserts `gap_records.json` via Supabase REST API (uses `urllib.request`, no supabase-py). Already executed; kept for reference.
+- `check_freshness.py` — detects instruments with no recent updates; outputs JSON; used by both freshness-check jobs.
+
+Keep `RENAME_MAP` and `SKIP_COLS` in sync between `load_to_supabase.py` and `load_commodities.py` if either changes.
 
 ### Supabase
-- Project: "COT WEEKLY RAW" (`jvybembfdefoqnnjnuhq`, region eu-west-1).
-- Target table: `public.cot_financials_raw` — `id bigint` PK, plus a `UNIQUE (market_and_exchange_names, report_date_as_mm_dd_yyyy)` constraint (`uq_fin_market_date`) that the upsert's `on_conflict` relies on.
-- A second, unrelated table `public.cot_weekly_raw` also exists in the same project (different COT report format — disaggregated/legacy, with `prod_merc_*`/`swap_*`/`m_money_*` columns). Don't confuse it with `cot_financials_raw`.
-- **Both tables currently have RLS disabled** — they are fully readable/writable by the anon key. Flag this before enabling anything that exposes the anon key client-side.
+- Project: `jvybembfdefoqnnjnuhq` (region eu-west-1).
+- **RLS is ENABLED on both tables** — the anon/publishable key is blocked. Always use `SUPABASE_SERVICE_ROLE_KEY`.
+- `public.cot_financials_raw` — TFF financial futures data. Unique constraint `uq_fin_market_date` on `(market_and_exchange_names, report_date_as_mm_dd_yyyy)`.
+- `public.cot_weekly_raw` — disaggregated COT commodity data (28 cols: `prod_merc_*`, `swap_*`, `m_money_*`, `traders_tot_*`). Unique constraint `uq_cot_market_date` on `(market_and_exchange_names, report_date_as_mm_dd_yyyy)`.
 
-### GitHub Actions (`.github/workflows/cot_financials_weekly.yml`)
-- Runs Fridays 17:00 UTC (CFTC releases ~16:30 UTC) plus `workflow_dispatch`.
-- Downloads the current year's annual zip, unzips to `xls_current/`, and runs `python load_to_supabase.py xls_current`.
-- Secrets required: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+#### Known instrument history (audited)
+
+**Financials (`cot_financials_raw`) — CFTC renamed ~10 instruments in Feb 2022:**
+Old names (frozen at 2022-02-01) and new names (starting 2022-02-08) both exist in the table. The 4-year gap 2022-02-08 → 2026-01-06 was backfilled via `exec_gap.py` (12,377 records, completed). Affected instruments: UST 10Y, UST 2Y, UST 5Y, T-Bonds, Fed Funds, GBP, NZD, USD Index, E-mini S&P 500, Nasdaq Mini.
+
+**Commodities (`cot_weekly_raw`) — complete, no gaps:**
+Main commodities (Gold, Silver, Crude Oil, Corn, Soybeans, Wheat-HRW, Wheat-SRW, Natural Gas, Copper, Coffee, Sugar, Cotton, Cocoa) have full coverage from 2006. WHEAT-HRW/SRW split in Dec 2013 is a structural CFTC change — no backfill possible or needed.
+
+### GitHub Actions workflows
+
+**`.github/workflows/cot_financials_weekly.yml`** — Fridays 17:00 UTC
+- Downloads `fut_fin_xls_{YEAR}.zip` → `xls_current/`
+- Runs `python load_to_supabase.py xls_current`
+- `freshness-check` job detects frozen instruments, raises GitHub Issues (label `instrumento-congelado`)
+
+**`.github/workflows/cot_commodities_weekly.yml`** — Fridays 17:30 UTC
+- Downloads `fut_disagg_xls_{YEAR}.zip` → `xls_commodities/`
+- Runs `python load_commodities.py xls_commodities`
+- `freshness-check` job raises GitHub Issues (label `instrumento-congelado-commodities`)
+
+Both workflows use the same GitHub Secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+
+### Security rules (mandatory)
+- **Never hardcode tokens or keys in any script.** Always read from environment variables.
+- The `sb_publishable_*` key format is NOT accepted by supabase-py — it raises `SupabaseException: Invalid API key`. Use the service-role JWT only.
+- Direct Supabase REST API calls (`urllib.request`) also require the service-role JWT plus `apikey` + `Authorization` headers and `?on_conflict=` query param alongside `Prefer: resolution=merge-duplicates`.
