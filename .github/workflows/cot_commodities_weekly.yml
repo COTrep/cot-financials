@@ -43,6 +43,22 @@ jobs:
           mkdir -p xls_commodities
           unzip -o disagg_current.zip -d xls_commodities
 
+      - name: Wake Supabase (retry up to 3 min)
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              "${{ secrets.SUPABASE_URL }}/rest/v1/cot_weekly_raw?select=report_date_as_mm_dd_yyyy&limit=1")
+            if [ "$STATUS" = "200" ]; then
+              echo "Supabase listo (HTTP 200)"
+              break
+            fi
+            echo "Intento $i: HTTP $STATUS — esperando 30s"
+            [ "$i" = "6" ] && echo "::error::Supabase no responde tras 3 min — proyecto posiblemente INACTIVE" && exit 1
+            sleep 30
+          done
+
       - name: Upsert into Supabase (cot_weekly_raw)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
