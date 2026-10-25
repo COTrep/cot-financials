@@ -61,6 +61,15 @@ DB_COLS = [
     "m_money_positions_long_all", "m_money_positions_long_old", "m_money_positions_long_other",
     "m_money_positions_short_all", "m_money_positions_short_old", "m_money_positions_short_other",
     "traders_tot_all", "traders_tot_old", "traders_tot_other",
+    # Other Reportables positions
+    "other_rept_positions_long_all", "other_rept_positions_short_all",
+    # Non-Reportable positions
+    "nonrept_positions_long_all", "nonrept_positions_short_all",
+    # Trader counts by category
+    "traders_prod_merc_long_all", "traders_prod_merc_short_all",
+    "traders_swap_long_all", "traders_swap_short_all",
+    "traders_m_money_long_all", "traders_m_money_short_all",
+    "traders_other_rept_long_all", "traders_other_rept_short_all",
 ]
 
 ALLOWED_MARKETS = {

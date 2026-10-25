@@ -1,0 +1,39 @@
+name: Disagg historical backfill (one-time)
+
+on:
+  workflow_dispatch:   # trigger manually only
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas xlrd supabase numpy requests
+
+      - name: Wake Supabase
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "apikey: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              "${{ secrets.SUPABASE_URL }}/rest/v1/cot_weekly_raw?select=report_date_as_mm_dd_yyyy&limit=1")
+            if [ "$STATUS" = "200" ]; then echo "Supabase listo"; break; fi
+            echo "Intento $i: HTTP $STATUS — esperando 30s"
+            [ "$i" = "6" ] && exit 1
+            sleep 30
+          done
+
+      - name: Run historical backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python load_disagg_historical.py
