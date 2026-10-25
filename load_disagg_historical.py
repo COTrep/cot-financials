@@ -16,8 +16,10 @@ import glob
 import shutil
 import tempfile
 import zipfile
-import urllib.request
+import time
 from datetime import datetime
+
+import requests as http_requests
 
 import numpy as np
 import pandas as pd
@@ -124,9 +126,14 @@ supabase = create_client(
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/HistoricalCompressed/index.htm",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
 }
 
 def download(label, url):
@@ -136,13 +143,19 @@ def download(label, url):
         print(f"  [{label}] already extracted, skipping download")
         return extract_dir
     print(f"  [{label}] downloading {url}")
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp, open(zip_path, "wb") as f:
-            shutil.copyfileobj(resp, f)
-    except Exception as e:
-        print(f"  [{label}] SKIP (download failed): {e}")
-        return None
+    for attempt in range(1, 4):
+        try:
+            resp = http_requests.get(url, headers=HEADERS, timeout=120, stream=True)
+            resp.raise_for_status()
+            with open(zip_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    f.write(chunk)
+            break
+        except Exception as e:
+            print(f"  [{label}] attempt {attempt} failed: {e}")
+            if attempt == 3:
+                return None
+            time.sleep(10)
     os.makedirs(extract_dir, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as z:
         z.extractall(extract_dir)
